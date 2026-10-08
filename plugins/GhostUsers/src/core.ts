@@ -18,6 +18,7 @@ function store$(name: string) {
 
 const diagStores: Record<string, string> = {};
 
+export const BUILD_TAG = "relsurgery-3";
 export const ChannelStore = store$("ChannelStore");
 export const UserStore = store$("UserStore");
 export const SelectedChannelStore = store$("SelectedChannelStore");
@@ -161,6 +162,8 @@ export function hideUser(id: string, tag?: string) {
     store.users = { ...store.users, [id]: rec };
     resetReactionKnowledge();
     announceHide(id, true);
+    exciseLiveRelationship(id);
+    touchListStores();
 }
 
 export function showUser(id: string) {
@@ -169,6 +172,105 @@ export function showUser(id: string) {
     store.users = next;
     resetReactionKnowledge();
     announceHide(id, false);
+    restoreLiveRelationship(id);
+    touchListStores();
+}
+
+/** Live relationship entries stashed on hide (keyed by user id), restored on
+    show. The Friends screen holds the store's mutable object itself, so
+    read-path copies never reach it — the entry has to leave the live map. */
+const relationshipStash: Record<string, { value: any; wasFriend: boolean }> = {};
+
+/** Raw live relationships map. Captured at module init (before any patch
+    exists) and refreshed from the patch callback (whose `ret` is always
+    pristine). Surgery must use this — never the patched getter, which returns
+    filtered copies once anyone is hidden. */
+let rawLiveRelationships: any = null;
+try {
+    rawLiveRelationships = findByStoreName("RelationshipStore")?.getMutableRelationships?.() ?? null;
+} catch { rawLiveRelationships = null; }
+export function noteLiveRelationships(raw: any) {
+    try {
+        if (raw && typeof raw === "object") rawLiveRelationships = raw;
+    } catch { /* ignore */ }
+}
+
+function liveRelationships(): any {
+    if (rawLiveRelationships && typeof rawLiveRelationships === "object") return rawLiveRelationships;
+    return null;
+}
+
+/** Remove them from the live map Discord already handed out (stash first). */
+function exciseLiveRelationship(id: string) {
+    try {
+        const live = liveRelationships();
+        if (!live || typeof live !== "object") {
+            note("excise: no live map");
+            return;
+        }
+        const keys = Object.keys(live);
+        const cur = (live as any)[id];
+        if (cur === undefined) {
+            note(`excise: map=${keys.length} has-key=no`);
+            return;
+        }
+        let wasFriend = false;
+        try {
+            wasFriend = findByStoreName("RelationshipStore")?.isFriend?.(id) === true;
+        } catch { /* ignore */ }
+        relationshipStash[id] = { value: cur, wasFriend };
+        delete (live as any)[id];
+    } catch (e) {
+        console.log("[GhostUsers] excise", e);
+    }
+}
+
+/** Put a shown user back into the live map when we took them out. */
+function restoreLiveRelationship(id: string) {
+    try {
+        const stashed = relationshipStash[id];
+        if (stashed === undefined) return;
+        delete relationshipStash[id];
+        const live = liveRelationships();
+        if (live && typeof live === "object" && (live as any)[id] === undefined) {
+            try {
+                (live as any)[id] = stashed.value;
+            } catch { /* ignore */ }
+        }
+    } catch (e) {
+        console.log("[GhostUsers] restore", e);
+    }
+}
+
+export const wasStashedFriend = (id: string) => relationshipStash[id]?.wasFriend === true;
+
+/** Drop the stash when the friendship genuinely ends while hidden, so a later
+    "show" can't resurrect it. */
+export function dropRelationshipStash(id?: string | null) {
+    if (id) delete relationshipStash[id];
+}
+
+/** Restore everything stashed (plugin unload) so an excised friendship is
+    never lost from the live map when the plugin is toggled off. */
+export function restoreAllStashed() {
+    for (const id of Object.keys(relationshipStash)) restoreLiveRelationship(id);
+}
+
+/** Nudge list screens to re-read their stores — read-path filtering only
+    shows up when the component renders again, and hiding emits no store
+    event of its own. Cheap: one emission per hide/show tap. */
+function touchListStores() {
+    for (const n of ["RelationshipStore", "ChannelStore", "PrivateChannelStore",
+        "DirectMessageStore", "ChannelMemberStore", "GuildMemberStore",
+        "UserStore", "PresenceStore"]) {
+        try {
+            const s: any = findByStoreName(n);
+            if (!s) continue;
+            // This build's Flux offers doEmitChanges, not emitChange (see probes).
+            if (typeof s.emitChange === "function") s.emitChange();
+            else if (typeof s.doEmitChanges === "function") s.doEmitChanges();
+        } catch { /* a store that dislikes being poked */ }
+    }
 }
 
 /** Everything learned about reactors is thrown away when the hidden set changes —

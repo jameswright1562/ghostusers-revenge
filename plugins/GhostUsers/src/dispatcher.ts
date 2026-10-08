@@ -5,11 +5,17 @@
 
 import { instead } from "@vendetta/patcher";
 import { FluxDispatcher } from "@vendetta/metro/common";
-import { anyHidden, diag, isHiddenIn, mark, opt, sawEvent, shouldHideMessage, store } from "./core";
+import { anyHidden, diag, dropRelationshipStash, isHidden, isHiddenIn, mark, note, opt, sawEvent, shouldHideMessage, store } from "./core";
 import { filterCallEvent, isHiddenStream, maskVoiceStates } from "./calls";
 import { forgetReactions, learnFromEvent, learnFromReactorList } from "./reactions";
 
 const memberEventsSeen = new Set<string>();
+const relationEventsSeen = new Set<string>();
+
+/** The other person on a relationship event, wherever this build keeps them. */
+const relIdOf = (e: any) =>
+    e?.relationship?.id ?? e?.relationship?.userId ?? e?.relationship?.user_id
+    ?? e?.relationship?.user?.id ?? e?.user_id ?? e?.userId ?? e?.user?.id;
 
 /** Reports, once per kind, any action that carries people — that is how the screen
     which still lists a hidden person gets traced back to its source. */
@@ -26,6 +32,12 @@ function noteMemberEvent(e: any) {
 /** true = the event is swallowed and never happened for this client. */
 function handle(e: any): boolean {
     noteMemberEvent(e);
+    if (/RELATIONSHIP/i.test(e.type ?? "") && !relationEventsSeen.has(e.type)) {
+        relationEventsSeen.add(e.type);
+        try {
+            note(`event ${e.type}: ${Object.keys(e).filter(k => k !== "type").slice(0, 8).join(",")}`);
+        } catch { /* ignore */ }
+    }
     switch (e.type) {
         case "MESSAGE_CREATE":
         case "MESSAGE_UPDATE": {
@@ -59,6 +71,33 @@ function handle(e: any): boolean {
         // the incoming operations leaves a hole in the numbered range the list keeps,
         // and the screen shows an endlessly loading placeholder where they were. It
         // is filtered where the screen reads its rows instead (see stores.ts).
+        // Friendships are the exception: the Friends screen holds the store's
+        // live object, so a hidden person must never land in it at all.
+
+        case "RELATIONSHIP_ADD":
+        case "RELATIONSHIP_UPDATE": {
+            if (isHidden(relIdOf(e))) return true;
+            return false;
+        }
+
+        case "RELATIONSHIP_REMOVE":
+        case "RELATIONSHIP_DELETE": {
+            dropRelationshipStash(relIdOf(e));
+            return false;
+        }
+
+        case "LOAD_RELATIONSHIPS_SUCCESS": {
+            const list = e.relationships ?? e.data;
+            if (Array.isArray(list)) {
+                const kept = list.filter((r: any) =>
+                    !isHidden(r?.id ?? r?.userId ?? r?.user_id ?? r?.user?.id));
+                if (kept.length !== list.length) {
+                    if (Array.isArray(e.relationships)) e.relationships = kept;
+                    else e.data = kept;
+                }
+            }
+            return false;
+        }
 
         case "TYPING_START":
             return isHiddenIn(e.userId ?? e.user_id, e.channelId ?? e.channel_id);

@@ -1,4 +1,4 @@
-import { diag, initStorage, mark, store } from "./core";
+import { diag, initStorage, mark, restoreAllStashed, store } from "./core";
 import { patchDispatcher } from "./dispatcher";
 import { patchMessages } from "./messages";
 import { patchStores } from "./stores";
@@ -52,6 +52,7 @@ export const onUnload = () => {
     patches = [];
     clearCallMemory();
     clearLookupState();
+    restoreAllStashed();
 };
 
 export { Settings as settings };
