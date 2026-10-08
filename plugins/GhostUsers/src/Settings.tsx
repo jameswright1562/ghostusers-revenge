@@ -20,7 +20,7 @@ const LABELS: Record<string, [string, string]> = {
     scopeServers: ["Servers", "Hide them in servers you share"],
     scopeDMs: ["Direct messages", "Hide your one-on-one chat with them"],
     autoVoiceMute: ["Mute in calls", "Silence them for you when they are in a call"],
-    hideMemberList: ["Member lists", "Take them out of member lists and counts"],
+    hideMemberList: ["Member & friends lists", "Take them out of member, friends and DM lists"],
     hideMentions: ["Tags & replies", "Also hide messages that tag or reply to them"],
 };
 
@@ -118,7 +118,18 @@ export default function Settings() {
     return el(
         ScrollView,
         null,
-
+        el(FormSection, 
+            {title: "General"},
+            el(FormSwitchRow, {
+                key: "showHideButton",
+                label: "Show \"Hide user (Ghost)\" button",
+                subLabel: "Shows a button on the user's profile that lets them hide themselves",
+                value: store.showHideButton,
+                onValueChange: (v: boolean) => {
+                    store.showHideButton = v;
+                },
+            })
+        ),
         el(
             FormSection,
             { title: ids.length ? `Hidden — ${ids.length}` : "Nobody is hidden" },
@@ -198,6 +209,7 @@ export default function Settings() {
                             ...Object.entries(diag.patches).map(([k, v]) => `${k}: ${v}`),
                             `seen: ${diag.events} events · hidden: ${diag.hiddenMsgs} messages · ${diag.rows} rows`,
                             diag.sheets.length ? `sheets: ${diag.sheets.join(", ")}` : "sheets: none yet",
+                            ...(diag.notes.length ? [`probes:\n${diag.notes.join("\n")}`] : []),
                         ].join("\n")),
                     el(FormDivider, { key: "d1" }),
                     ...CHANGELOG.map(entry =>

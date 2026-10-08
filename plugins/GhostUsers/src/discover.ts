@@ -11,7 +11,7 @@ import { FluxDispatcher } from "@vendetta/metro/common";
 
 const log = (line: string) => console.log(`[GhostUsers][find] ${line}`);
 
-const INTERESTING = /member|reaction|call|voice|ring|typing|message|channel/i;
+const INTERESTING = /member|reaction|call|voice|ring|typing|message|channel|friend|relationship|presence|private|dm/i;
 
 export function reconnoitre() {
     try {
@@ -49,6 +49,9 @@ export function reconnoitre() {
             "TypingStore",
             "SortedVoiceStateStore",
             "VoiceStateStore",
+            "RelationshipStore",
+            "PresenceStore",
+            "PrivateChannelStore",
         ]) {
             const s = findByStoreName(name);
             if (!s) {

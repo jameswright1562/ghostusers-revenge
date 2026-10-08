@@ -6,7 +6,7 @@
 
 import { after } from "@vendetta/patcher";
 import { findByStoreName } from "@vendetta/metro";
-import { anyHidden, diag, isHiddenIn, isHidden, mark, onHiddenSetChanged, opt, SelectedChannelStore, store } from "./core";
+import { anyHidden, diag, isHiddenIn, isHidden, mark, note, onHiddenSetChanged, opt, SelectedChannelStore, store } from "./core";
 import { learnReactors, emojiKey } from "./reactions";
 
 const idOf = (x: any): string | undefined =>
@@ -15,6 +15,145 @@ const idOf = (x: any): string | undefined =>
 /** Hidden here, and hidden from lists of people specifically. */
 const hiddenInList = (userId?: string, channelId?: string) =>
     !!userId && isHiddenIn(userId, channelId) && opt(userId, "hideMemberList");
+
+/** Friends list has no channel, so scope switches don't apply — the
+    member-lists switch alone decides. */
+const hiddenFriend = (userId?: string | null) =>
+    !!userId && isHidden(userId) && opt(userId, "hideMemberList");
+
+/** Whatever shape a relationship list takes on this build: ids, user
+    objects, or a map keyed by id. Counts (numbers) are left alone. */
+function filterRelationships(ret: any): any {
+    if (Array.isArray(ret)) {
+        const kept = ret.filter((r: any) => !hiddenFriend(idOf(r) ?? (r as any)?.user_id));
+        if (kept.length === ret.length) return ret;
+        diag.rows += ret.length - kept.length;
+        return kept;
+    }
+    if (ret instanceof Map) {
+        let changed = false;
+        const out = new Map();
+        for (const [k, v] of ret) {
+            if (hiddenFriend(typeof k === "string" ? k : idOf(v))) { changed = true; continue; }
+            out.set(k, v);
+        }
+        if (!changed) return ret;
+        diag.rows++;
+        return out;
+    }
+    if (ret && typeof ret === "object") {
+        const keys = Object.keys(ret);
+        if (!keys.length) return ret;
+        // heuristic: a map of userId -> something (type, relationship)
+        const looksLikeIdMap = keys.some(k => /^\d{15,}$/.test(k));
+        if (!looksLikeIdMap) return ret;
+        let changed = false;
+        const out: any = {};
+        for (const [k, v] of Object.entries(ret)) {
+            if (hiddenFriend(k) || hiddenFriend(idOf(v))) { changed = true; continue; }
+            out[k] = v;
+        }
+        if (!changed) return ret;
+        diag.rows++;
+        return out;
+    }
+    return ret;
+}
+
+/** A DM/group-DM channel row hides when any of its other people is hidden
+    there. Respects their scope switches via the channel in hand. */
+function channelHidesRow(ch: any): boolean {
+    if (!ch || typeof ch !== "object") return false;
+    const chId = ch.id ?? ch.channelId ?? ch.channel_id;
+    const lists = [ch.recipients, ch.rawRecipients, ch.recipientIds];
+    for (const list of lists) {
+        if (!Array.isArray(list)) continue;
+        for (const r of list) {
+            const id = idOf(r);
+            if (id && hiddenInList(id, chId)) return true;
+        }
+    }
+    const single = ch.recipientId ?? ch.recipient_id ?? ch.userId;
+    if (typeof single === "string" && hiddenInList(single, chId)) return true;
+    return false;
+}
+
+function filterDMChannels(ret: any): any {
+    if (Array.isArray(ret)) {
+        const kept = ret.filter((ch: any) => !channelHidesRow(ch));
+        if (kept.length === ret.length) return ret;
+        diag.rows += ret.length - kept.length;
+        return kept;
+    }
+    if (ret && typeof ret === "object") {
+        const keys = Object.keys(ret);
+        if (!keys.length) return ret;
+        let changed = false;
+        const out: any = {};
+        for (const [k, v] of Object.entries(ret)) {
+            if (v && typeof v === "object" && channelHidesRow(v)) { changed = true; continue; }
+            out[k] = v;
+        }
+        if (!changed) return ret;
+        diag.rows++;
+        return out;
+    }
+    return ret;
+}
+
+/** Summarise a value's shape without dumping personal data. */
+function shapeOf(v: any): string {
+    try {
+        if (Array.isArray(v)) {
+            const f = v[0];
+            const id = typeof f === "string" ? f : f?.userId ?? f?.user?.id ?? f?.id ?? f?.user_id;
+            return `arr[${v.length}](${typeof f}${id ? `:${String(id).slice(0, 6)}..` : ""})`;
+        }
+        if (v && typeof v === "object") {
+            const keys = Object.keys(v);
+            return `obj{${keys.slice(0, 5).join(",")}}${keys.length > 5 ? `+${keys.length - 5}` : ""}`;
+        }
+        return typeof v;
+    } catch {
+        return "?";
+    }
+}
+
+/** List social getters and sample the zero-arg ones. Runs once at load; the
+    results land in Settings notes, so a renamed getter gets caught without
+    adb. Never throws. */
+function probeSocialStores() {
+    for (const name of ["RelationshipStore", "PrivateChannelStore", "DirectMessageStore", "PresenceStore"]) {
+        let s: any = null;
+        try {
+            s = findByStoreName(name);
+        } catch { s = null; }
+        if (!s) {
+            note(`${name}: missing`);
+            continue;
+        }
+        try {
+            const proto = Object.getPrototypeOf(s) ?? {};
+            const methods = [...new Set([
+                ...Object.keys(s),
+                ...Object.getOwnPropertyNames(proto),
+            ])].filter(k =>
+                k !== "constructor" && typeof (s as any)[k] === "function"
+                && /relation|friend|presence|private|sorted|blocked|pending/i.test(k));
+            note(`${name}: ${methods.slice(0, 12).join(",") || "no match"}`);
+            for (const m of ["getRelationships", "getFriendIDs", "getPrivateChannels", "getSortedPrivateChannels"]) {
+                if (typeof s[m] !== "function") continue;
+                try {
+                    note(`${name}.${m}: ${shapeOf(s[m]())}`);
+                } catch {
+                    note(`${name}.${m}: threw`);
+                }
+            }
+        } catch (e) {
+            console.log(`[GhostUsers] probe ${name}`, e);
+        }
+    }
+}
 
 /** Bumped whenever the hidden set changes, so cached copies are thrown away. */
 let generation = 0;
@@ -230,6 +369,63 @@ export function patchStores(patches: (() => void)[]) {
     on("ChannelMemberCountStore", "getMemberCount", ([channelId], ret) =>
         typeof ret === "number" ? Math.max(0, ret - countHiddenIn(channelId)) : ret,
         "channelMemberCount");
+
+    /* ---- friends list: no channel, so only the member-lists switch applies.
+       Single-user lookups (isFriend/getRelationshipType) are deliberately left
+       alone — the friendship still exists, it is just not listed. Method names
+       differ per build, so every plausible getter is tried; the About block
+       shows which ones attached. */
+    for (const m of ["getRelationships", "getRelationshipsByType", "getFriendIDs",
+        "getFriends", "getPendingIDs", "getBlockedIDs", "getSortedRelationships",
+        "getRelationshipIDs", "getAllRelationships"]) {
+        on("RelationshipStore", m, (_a, ret) => filterRelationships(ret), `rel:${m}`, true);
+    }
+
+    /** How many hidden people are actually friends (membership asked of the
+        unpatched lookup, never assumed). */
+    const hiddenFriendCount = () => {
+        try {
+            const rs = findByStoreName("RelationshipStore");
+            let n = 0;
+            for (const id of Object.keys(store.users ?? {})) {
+                if (!opt(id, "hideMemberList")) continue;
+                try {
+                    const f = rs?.isFriend?.(id);
+                    if (typeof f === "boolean") { if (f) n++; }
+                    else if (rs?.getRelationshipType?.(id) === 1) n++;
+                } catch { /* not provably a friend */ }
+            }
+            return n;
+        } catch {
+            return 0;
+        }
+    };
+    for (const m of ["getFriendCount", "getRelationshipCount", "getRelationshipsCount", "getTotalCount"]) {
+        on("RelationshipStore", m, (_a, ret) =>
+            typeof ret === "number" ? Math.max(0, ret - hiddenFriendCount()) : ret,
+            `rel:${m}`, true);
+    }
+
+    /* ---- DM list: 1:1 DMs hide via scopeDMs, group DMs via scopeGroups
+       (through isHiddenIn inside channelHidesRow). Single-channel lookups are
+       left alone so opening a DM from a profile still works. */
+    for (const [sn, m] of [
+        ["PrivateChannelStore", "getPrivateChannels"],
+        ["PrivateChannelStore", "getSortedPrivateChannels"],
+        ["ChannelStore", "getSortedPrivateChannels"],
+        ["ChannelStore", "getPrivateChannels"],
+        ["DirectMessageStore", "getPrivateChannels"],
+        ["DirectMessageStore", "getSortedPrivateChannels"],
+    ] as [string, string][]) {
+        on(sn, m, (_a, ret) => filterDMChannels(ret), `dm:${sn}.${m}`, true);
+    }
+
+    /* ---- one-time probe of the social stores; see Settings notes. */
+    try {
+        probeSocialStores();
+    } catch (e) {
+        console.log("[GhostUsers] probe", e);
+    }
 
     /* ---- reactions: who reacted, straight from the store ----
        This is the same trick the desktop plugin uses. Every list of reactors the app

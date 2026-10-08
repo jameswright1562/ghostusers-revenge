@@ -55,7 +55,7 @@ export function startSonar(patches: (() => void)[]) {
         } catch {
             continue;
         }
-        if (!/member|channel|guild|user|voice|call|typing|reaction|message/i.test(name)) continue;
+        if (!/member|channel|guild|user|voice|call|typing|reaction|message|friend|relationship|presence|private|dm/i.test(name)) continue;
 
         const proto = Object.getPrototypeOf(s) ?? {};
         const methods = [

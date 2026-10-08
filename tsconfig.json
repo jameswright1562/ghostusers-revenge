@@ -9,7 +9,6 @@
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
-    "types": ["vendetta-types"]
   },
-  "include": ["plugins/**/*"]
+  "include": ["plugins/**/*", "node_modules/vendetta-types/defs.d.ts"]
 }

@@ -52,6 +52,7 @@ type Store = {
     debug: boolean;
     /** one-time upgrade of records made when hiding meant "group DMs only" */
     migratedScopes: boolean;
+    showHideButton: boolean;
 };
 
 export const store = storage as unknown as Store;
@@ -60,6 +61,7 @@ export function initStorage() {
     store.users ??= {};
     store.reactionCache ??= {};
     store.debug ??= false;
+    store.showHideButton ??= true;
     // Hidden means hidden — everywhere, unless someone narrows it themselves.
     store.defaults ??= {
         scopeGroups: true,
@@ -239,9 +241,10 @@ export function sawEvent(type: string) {
 }
 
 export function sawSheet(key: string, props?: any) {
-    if (!key || diag.sheets.includes(key)) return;
-    console.log(`[GhostUsers] sheet "${key}" props=${props && typeof props === "object" ? Object.keys(props).slice(0, 10).join(",") : typeof props}`);
-    diag.sheets.push(key);
+    const propKeys = props && typeof props === "object" ? Object.keys(props).slice(0, 12).join(",") : typeof props;
+    if (!key || diag.sheets.some(s => s.split(" [")[0] === key)) return;
+    console.log(`[GhostUsers] sheet "${key}" props=${propKeys}`);
+    diag.sheets.push(propKeys ? `${key} [${propKeys}]` : key);
     while (diag.sheets.length > 8) diag.sheets.shift();
 }
 
@@ -251,5 +254,5 @@ export function mark(name: string, ok: boolean, detail = "") {
 
 export function note(line: string) {
     diag.notes.push(line);
-    while (diag.notes.length > 6) diag.notes.shift();
+    while (diag.notes.length > 24) diag.notes.shift();
 }
